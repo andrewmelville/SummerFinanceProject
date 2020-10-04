@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import seaborn as sns
 #%% Data Loading
 
 # Reading in contract list

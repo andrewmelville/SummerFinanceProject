@@ -1,5 +1,6 @@
-from preprocessing import contract_dict, df_dict, equities_labels, energies_labels, currencies_labels, metals_labels, gold_labels, softs_labels, bonds_labels
+from preprocessing import contract_dict, df_dict, equities_labels, energies_labels, currencies_labels, metals_labels, gold_labels, softs_labels, bonds_labels, trimmed_dates
 from sklearn.decomposition import PCA
+from sklearn.linear_model import LinearRegression
 
 import pandas as pd
 import numpy as np
@@ -110,7 +111,7 @@ PC_proj_df['US Dollar Index'] = trimmed_dates['ICE US Dollar Index']
 # PC_proj_df['Energies Avg'] = trimmed_dates[energies_labels].drop('ICE Heating Oil', axis = 1).mean(axis = 1)
 
 # Energies reduced to just NYMEX WTI Crude Oil
-PC_proj_df['WTI Oil'] = trimmed_dates['NYMEX WTI Crude Oil']
+PC_proj_df['WTI Crude Oil'] = trimmed_dates['NYMEX WTI Crude Oil']
 
 # Yield Curve Predictors
 # 5/10 Year Yield Curve
@@ -167,34 +168,123 @@ col = pred_corr_map.ax_col_dendrogram.get_position()
 pred_corr_map.ax_col_dendrogram.set_position([col.x0, col.y0, col.width, col.height])
 #%% Perform rolling linear regression
 
-from sklearn.linear_model import LinearRegression
-
 
 def rolling_lr(outcome, predictors, lookback, intercept):
-
-    # Merging input data
-    full_df = predictors.join(outcome, on = outcome.index)
     
-    # Initialising empty array for beta coefficients
+    # Initialise empty array for beta coefficients
     beta_df = pd.DataFrame([[np.nan]*predictors.shape[1]]*predictors.shape[0], columns = predictors.columns, index = predictors.index)
     
-    # Initialising empty array for R^2
+    # Initialise empty array for R^2
     r_df = pd.DataFrame([[np.nan]*1]*predictors.shape[0], index = predictors.index)
     
-    # Initialising empty array for MSE
+    # Initialise empty array for MSE
     mse_df = pd.DataFrame([[np.nan]*1]*predictors.shape[0], index = predictors.index)
     
-    # Initialising empty array for prediction
+    # Initialise empty array for prediction
+    pred_ts = pd.DataFrame([[np.nan]*1]*predictors.shape[0], index = predictors.index, columns = ['Prediction'])
+    
+    # Merge input data
+    full_df = predictors.join(outcome, on = outcome.index)
+    
+    # Foward fill all na entries in full_df
+    full_df = full_df.fillna(method='ffill')
+
+    # Roll through each day
+    for t in range(full_df.shape[0]-lookback):
+        
+        # Splice data frame to the last lookback-1 days
+        regression_window = full_df.iloc[t:t+lookback-1,:]
+        
+        # Perform linear regression
+        cur_lr = LinearRegression(fit_intercept=intercept)
+        cur_lr.fit(regression_window.iloc[:,1:], regression_window.iloc[:,0])
+        
+        # Save beta values for current day
+        beta_df.iloc[t+lookback-1,:] = cur_lr.coef_
+        
+        # Save R^2 for current day
+        r_df.iloc[t+lookback] = cur_lr.score(regression_window.iloc[:,1:], regression_window.iloc[:,0])
+        
+        # Save MSE for current day
+        mse_df.iloc[t+lookback] = np.square(cur_lr.predict(regression_window.iloc[:,1:]) - regression_window.iloc[:,0]).mean()
+        
+        # Save prediction for current day
+        pred_ts.iloc[t+lookback] = cur_lr.predict(np.array(full_df.iloc[t+lookback,1:]).reshape(1,-1))
+    
+    return beta_df, pred_ts
+    
+    # # # Plot beta time series
+    # # plt.figure(figsize=(20,10))
+    # # for col in beta_df.columns:    
+    # #     plt.plot(beta_df[col].iloc[lookback:], lw=1, label = col)
+    # # plt.xlabel('Year')
+    # # plt.ylabel('Value of Coefficicent in Linear Regression')
+    # # plt.title('Beta Coefficients in Rolling Linear Regression')
+    # # plt.legend(loc=3)
+    # # plt.show()
+    
+    # # Plot coefficient of determination time series
+    # # plt.figure(figsize=(20,10))
+    # # plt.plot(r_df[lookback:], lw=1, label = 'R Squared')
+    # # # plt.plot(mse_df[lookback:], lw=1, label = 'MSE')
+    # # plt.xlabel('Year')
+    # # plt.ylabel('Coefficient of Determination')
+    # # plt.title('Plot of R^2 Over Time in Rolling Linear Regression')
+    # # plt.legend(loc=3)
+    # # plt.show()
+    
+    # # # Plot fitted time series against observed time series
+    # # plt.figure(figsize=(20,10))
+    # # plt.scatter(pred_ts[lookback:], outcome[lookback:], lw=1, label = 'Prediction')
+    # # # plt.plot(outcome[lookback:], lw=1, label = 'True Outcome')
+    # # plt.xlabel('Predicted Value')
+    # # plt.ylabel('Observed Value')
+    # # plt.title('Plot of Prediction Compared to True Outcome')
+    # # plt.legend(loc=3)
+    # # plt.show()
+    
+    # # Plot residual plot
+    # # plt.figure(figsize=(20,10))
+    # # # plt.scatter(x = outcome[lookback:], y = outcome[lookback:] - pred_ts[lookback:], lw=1, label = 'Prediction')
+    # # plt.scatter(x = outcome[lookback:]-pred_ts[lookback:], y = outcome[lookback:]-pred_ts[lookback:], lw=1, label = 'Prediction')
+    # # plt.ylabel('Residual Value')
+    # # plt.xlabel('Observed Value')
+    # # plt.title('Plot of Residuals Against True Outcome')
+    # # plt.legend(loc=3)
+    # # plt.show()
+    
+    
+
+# rolling_reg_coeffs = rolling_lr(PC_proj_df['1st PC Projection'], PC_proj_df.iloc[:,1:], 500, False)
+
+
+from sklearn.linear_model import Lasso
+
+def rolling_lasso(outcome, predictors, lookback, intercept, alph):
+    
+    # Initialise empty array for beta coefficients
+    beta_df = pd.DataFrame([[np.nan]*predictors.shape[1]]*predictors.shape[0], columns = predictors.columns, index = predictors.index)
+    
+    # Initialise empty array for R^2
+    r_df = pd.DataFrame([[np.nan]*1]*predictors.shape[0], index = predictors.index)
+    
+    # Initialise empty array for MSE
+    mse_df = pd.DataFrame([[np.nan]*1]*predictors.shape[0], index = predictors.index)
+    
+    # Initialise empty array for prediction
     pred_ts = pd.DataFrame([[np.nan]*1]*predictors.shape[0], index = predictors.index)
     
-    # Rolling through each day
-    for t in range(predictors.shape[0]-lookback):
+    # Merge input data
+    full_df = predictors.join(outcome, on = outcome.index)
+
+    # Roll through each day
+    for t in range(full_df.shape[0]-lookback):
         
         # Splice data frame to the last lookback-1 days
         regression_window = full_df.iloc[t:t+lookback-1,:].dropna()
         
         # Perform linear regression
-        cur_lr = LinearRegression(fit_intercept=intercept)
+        cur_lr = Lasso(alpha = alph, fit_intercept=intercept)
         cur_lr.fit(regression_window.iloc[:,1:], regression_window.iloc[:,0])
         
         # Save beta values for current day
@@ -214,24 +304,23 @@ def rolling_lr(outcome, predictors, lookback, intercept):
     for col in beta_df.columns:    
         plt.plot(beta_df[col].iloc[lookback:], lw=1, label = col)
     plt.xlabel('Year')
-    plt.ylabel('Value of Coefficicent in Linear Regression')
-    plt.title('Beta Coefficients in Rolling Linear Regression')
+    plt.ylabel('Value of Coefficicent in Lasso Regression')
+    plt.title('Beta Coefficients in Rolling Lasso Regression')
     plt.legend(loc=3)
     plt.show()
     
     # Plot coefficient of determination time series
     plt.figure(figsize=(20,10))
     plt.plot(r_df[lookback:], lw=1, label = 'R Squared')
-    plt.plot(mse_df[lookback:], lw=1, label = 'MSE')
+    # plt.plot(mse_df[lookback:], lw=1, label = 'MSE')
     plt.xlabel('Year')
     plt.ylabel('Coefficient of Determination')
-    plt.title('Plot of R^2 Over Time in Rolling Linear Regression')
+    plt.title('Plot of R^2 Over Time in Rolling Lasso Regression')
     plt.legend(loc=3)
     plt.show()
     
     
     # Plot fitted time series against observed time series
-    print(pred_ts[lookback:] - outcome[lookback:])
     # plt.figure(figsize=(20,10))
     # plt.plot(pred_ts[lookback:] - outcome[lookback:], lw=1, label = 'Prediction')
     # # plt.plot(outcome[lookback:], lw=1, label = 'True Outcome')
@@ -243,10 +332,89 @@ def rolling_lr(outcome, predictors, lookback, intercept):
     
     return beta_df
 
-rolling_reg_coeffs = rolling_lr(PC_proj_df['1st PC Projection'], PC_proj_df.iloc[:,1:], 500, False)
+# rolling_reg_coeffs = rolling_lr(PC_proj_df['1st PC Projection'], PC_proj_df.iloc[:,1:], 500, False)
 
 
-# #%% 
+
+#%%
+
+from sklearn.linear_model import Ridge
+
+def rolling_ridge(outcome, predictors, lookback, intercept, alph):
+    
+    # Initialise empty array for beta coefficients
+    beta_df = pd.DataFrame([[np.nan]*predictors.shape[1]]*predictors.shape[0], columns = predictors.columns, index = predictors.index)
+    
+    # Initialise empty array for R^2
+    r_df = pd.DataFrame([[np.nan]*1]*predictors.shape[0], index = predictors.index)
+    
+    # Initialise empty array for MSE
+    mse_df = pd.DataFrame([[np.nan]*1]*predictors.shape[0], index = predictors.index)
+    
+    # Initialise empty array for prediction
+    pred_ts = pd.DataFrame([[np.nan]*1]*predictors.shape[0], index = predictors.index)
+    
+    # Merge input data
+    full_df = predictors.join(outcome, on = outcome.index)
+
+    # Roll through each day
+    for t in range(full_df.shape[0]-lookback):
+        
+        # Splice data frame to the last lookback-1 days
+        regression_window = full_df.iloc[t:t+lookback-1,:].dropna()
+        
+        # Perform linear regression
+        cur_lr = Ridge(alpha = alph, fit_intercept=intercept)
+        cur_lr.fit(regression_window.iloc[:,1:], regression_window.iloc[:,0])
+        
+        # Save beta values for current day
+        beta_df.iloc[t+lookback-1,:] = cur_lr.coef_
+        
+        # Save R^2 for current day
+        r_df.iloc[t+lookback] = cur_lr.score(regression_window.iloc[:,1:], regression_window.iloc[:,0])
+        
+        # Save MSE for current day
+        mse_df.iloc[t+lookback] = np.square(cur_lr.predict(regression_window.iloc[:,1:]) - regression_window.iloc[:,0]).mean()
+        
+        # Save prediction for current day
+        pred_ts.iloc[t+lookback] = cur_lr.predict(regression_window.iloc[:,1:])[-1]
+    
+    # Plot beta time series
+    plt.figure(figsize=(20,10))
+    for col in beta_df.columns:    
+        plt.plot(beta_df[col].iloc[lookback:], lw=1, label = col)
+    plt.xlabel('Year')
+    plt.ylabel('Value of Coefficicent in Lasso Regression')
+    plt.title('Beta Coefficients in Rolling Lasso Regression')
+    plt.legend(loc=3)
+    plt.show()
+    
+    # Plot coefficient of determination time series
+    plt.figure(figsize=(20,10))
+    plt.plot(r_df[lookback:], lw=1, label = 'R Squared')
+    # plt.plot(mse_df[lookback:], lw=1, label = 'MSE')
+    plt.xlabel('Year')
+    plt.ylabel('Coefficient of Determination')
+    plt.title('Plot of R^2 Over Time in Rolling Lasso Regression')
+    plt.legend(loc=3)
+    plt.show()
+    
+    
+    # Plot fitted time series against observed time series
+    # plt.figure(figsize=(20,10))
+    # plt.plot(pred_ts[lookback:] - outcome[lookback:], lw=1, label = 'Prediction')
+    # # plt.plot(outcome[lookback:], lw=1, label = 'True Outcome')
+    # plt.xlabel('Year')
+    # plt.ylabel('Coefficient of Determination')
+    # plt.title('Plot of Prediction Compared to True Outcome')
+    # plt.legend(loc=3)
+    # plt.show()
+    
+    return beta_df
+
+# rolling_reg_coeffs = rolling_lr(PC_proj_df['1st PC Projection'], PC_proj_df.iloc[:,1:], 500, False)
+
+#%% 
 
 # from sklearn.pipeline import Pipeline
 # from sklearn.feature_selection import SelectKBest, f_regression, mutual_info_regression
